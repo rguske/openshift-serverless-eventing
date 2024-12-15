@@ -1,0 +1,19 @@
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: rabbitmq-cluster-1
+  namespace: rabbitmq-clusters
+  annotations:
+    rabbitmq.com/topology-allowed-namespaces: "rguske-functions"
+spec:
+  persistence:
+    storageClassName: 
+    storage: 20Gi
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 100m
+#    limits:
+#      cpu: 200m
+#      memory: 2Gi

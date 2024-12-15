@@ -1,0 +1,11 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: sockeye
+  namespace: rguske-functions
+spec:
+  template:
+    spec:
+      containerConcurrency: 0
+      containers:
+      - image: n3wscott/sockeye:v0.7.0
