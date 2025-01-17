@@ -1,36 +1,151 @@
 # Red Hat OpenShift Serverless Demo
 
-WIP!
+This repository is intent to provide information on Red Hat's OpenShift Serverless (Knative Serving) capabilities.
 
 Demoing Red Hat's OpenShift Serverless/Knative Eventing power.
 
 ## Eventing
 
-### RabbitMQ Operator installation
+Knative Eventing uses standard HTTP POST requests to send and receive events between event producers and sinks. These events conform to the CloudEvents specifications, which enables creating, parsing, sending, and receiving events in any programming language.
 
-`kubectl apply -f https://github.com/rabbitmq/cluster-operator/releases/latest/download/cluster-operator.yml`
+### InMemoryChannel Broker
 
-Topology and Messaging
+In order to send events from a system (source) to a sink, you need a component which does it for you. This is a [Broker](https://docs.redhat.com/en/documentation/red_hat_openshift_serverless/1.34/html/eventing/brokers#serverless-brokers).
 
-`kubectl apply -f https://github.com/rabbitmq/messaging-topology-operator/releases/latest/download/messaging-topology-operator-with-certmanager.yaml`
+![Brokers](assets/serverless-event-broker-workflow.png)
 
-Install the RabbitMQ controller
+For testing and lab purposes, Knative provides the `InMemoryChannel` broker. Other types of brokers are available too. Like Kafka or RabbitMQ for example. These kind of brokers should be used for production since they are providing e.g. event delivery guarantees.
 
-`kubectl apply -f https://github.com/knative-extensions/eventing-rabbitmq/releases/download/knative-v1.15.0/rabbitmq-broker.yaml`
+Creating the `InMemoryChannel` broker:
 
-`kubectl create ns rabbitmq-cluster`
+`kn broker create inmem-broker`
 
-### Event-Display App Sockeye
+Alternatively:
 
-Install Sockeye
+```shell
+oc apply -f - <<EOF
+apiVersion: eventing.knative.dev/v1
+kind: Broker
+metadata:
+  name: inmem-broker
+  namespace: rguske-kn-eventing
+spec:
+  config:
+    apiVersion: v1
+    kind: ConfigMap
+    name: config-br-default-channel
+    namespace: knative-eventing
+  delivery:
+    backoffDelay: PT0.2S
+    backoffPolicy: exponential
+    retry: 10
+EOF
+```
+
+### Creating the Knative ApiServerSource
+
+The `ApiServerSource` is a `source` which connects to the Kubernetes Api Server (ReadOnly) and receives all created events. These events can then be forwarded to e.g. a (subscribed) `Trigger`. Triggers will be covered below.
+
+Create a service account, role, and role binding for the event source:
 
 ```yaml
-kubectl create -f - <<EOF
+oc create -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: events-sa
+  namespace: rguske-kn-eventing
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: event-watcher
+  namespace: rguske-kn-eventing
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-ra-event-watcher
+  namespace: rguske-kn-eventing
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: event-watcher
+subjects:
+  - kind: ServiceAccount
+    name: events-sa
+    namespace: rguske-kn-eventing
+EOF
+```
+
+Create the ApiServerSource using mode `Resource` via Cli:
+
+```shell
+kn source apiserver create api-server-source \
+--sink broker:inmem-broker \
+--resource "event:v1" \
+--service-account events-sa \
+--mode Resource
+```
+
+Alternatively:
+
+```yaml
+apiVersion: sources.knative.dev/v1
+kind: ApiServerSource
+metadata:
+  name: api-server-source
+  namespace: rguske-kn-eventing
+  labels:
+    app: api-server-source
+spec:
+  mode: Reference
+  resources:
+    - apiVersion: v1
+      kind: Event
+  serviceAccountName: events-sa
+  sink:
+    ref:
+      apiVersion: eventing.knative.dev/v1
+      kind: Broker
+      name: inmem-broker
+```
+
+### Event-Display Applications
+
+In order to get all incoming events displayed either on a terminal or in a webbrower, Event Display applications come in handy.
+
+Create a Knative service that dumps incoming messages to its log:
+
+`kn service create event-display --image quay.io/openshift-knative/showcase`
+
+This app can be browsed via its `route`:
+
+```shell
+kn route list
+NAME            URL                                                                                READY
+event-display   https://event-display-rguske-kn-eventing.apps.ocp4.stormshift.coe.muc.redhat.com   True
+```
+
+2nd application:
+
+Install [Sockeye](https://github.com/n3wscott/sockeye)
+
+```yaml
+oc create -f - <<EOF
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
   name: sockeye
-  namespace: rguske-functions
 spec:
   template:
     spec:
@@ -40,62 +155,77 @@ spec:
 EOF
 ```
 
-`kn service update --scale 1 sockeye -n functions`
+Incoming events can be observed via `logs` or via browsing the url:
 
-`kn trigger create sockeye --broker kn-mtchannel-broker --sink ksvc:sockeye -n rguske-functions`
+```shell
+kn route list
+NAME            URL                                                                                READY
+event-display   https://event-display-rguske-kn-eventing.apps.ocp4.stormshift.coe.muc.redhat.com   True
+sockeye         https://sockeye-rguske-kn-eventing.apps.ocp4.stormshift.coe.muc.redhat.com         True
+```
+
+`kn service update --scale 1 sockeye`
+
+### Triggers
+
+After events have entered the broker, they can be filtered by CloudEvent attributes using triggers, and sent as an `HTTP POST` request to an event sink.
+
+Event source --> Broker --> Trigger --> Sink
+Kubernetes --> InMemoryChannel Broker --> Trigger --> Sockeye
+
+Create `trigger`s for the two event-display apps:
+
+`kn trigger create trigger-event-display --broker inmem-broker --sink ksvc:event-display`
+
+`kn trigger create trigger-sockeye --broker inmem-broker --sink ksvc:sockeye`
+
+```shell
+kn trigger list
+NAME                    BROKER         SINK                 AGE   CONDITIONS   READY   REASON
+trigger-event-display   inmem-broker   ksvc:event-display   26s   7 OK / 7     True
+trigger-sockeye         inmem-broker   ksvc:sockeye         17s   7 OK / 7     True
+```
+
+In `yaml`:
 
 ```yaml
+oc create -f - <<EOF
 apiVersion: eventing.knative.dev/v1
 kind: Trigger
 metadata:
-  name: sockeye-trigger
+  labels:
+    eventing.knative.dev/broker: inmem-broker
+  name: trigger-event-display
+  namespace: rguske-kn-eventing
 spec:
-  broker: rabbitmq-broker
+  broker: inmem-broker
+  filter: {}
   subscriber:
     ref:
-      apiVersion: v1
+      apiVersion: serving.knative.dev/v1
       kind: Service
-      name: sockeye
+      name: event-display
+      namespace: rguske-kn-eventing
 EOF
 ```
 
-### Eventing Sources
-
-#### Knative ApiServerSource (Kubernetes API)
-
-
-
-
-#### Tanzu Sources for Knative (vCenter Server API)
-
-#### Install Tanzu Sources for Knative
-
-`kubectl apply -f https://github.com/vmware-tanzu/sources-for-knative/releases/latest/download/release.yaml`
-
-`kubectl create ns vsphere-sources`
-
-```code
-export USER='kn-ro@vsphere.local'
-export PWD='VMware1!'
-```
-
-```code
-kn vsphere auth create \
---namespace knative-sources \
---username ${USER} \
---password ${PWD} \
---name vcsa-creds \
---verify-url https://vcsa.jarvis.lab \
---verify-insecure
-```
-
-```code
-kn vsphere source create \
---namespace knative-sources \
---name vcsa-source \
---vc-address https://vcsa.jarvis.lab \
---skip-tls-verify \
---secret-ref vcsa-creds \
---sink-uri http://broker-ingress.knative-eventing.svc.cluster.local/redhat-functions/default \
---encoding json
+```yaml
+oc create -f - <<EOF
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  labels:
+    eventing.knative.dev/broker: inmem-broker
+  name: trigger-sockeye
+  namespace: rguske-kn-eventing
+spec:
+  broker: inmem-broker
+  filter: {}
+  subscriber:
+    ref:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      name: sockeye
+      namespace: rguske-kn-eventing
+EOF
 ```
