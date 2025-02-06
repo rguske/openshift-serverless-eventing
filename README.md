@@ -348,7 +348,7 @@ spec:
         storage:
           accessModes:
             - ReadWriteMany
-          storageClassName: coe-netapp-san
+          storageClassName: thin-csi
           resources:
             requests:
               storage: 30Gi
@@ -401,3 +401,172 @@ spec:
           name: cloudinitdisk
 EOF
 ```
+
+## Tanzu Sources for Knative
+
+Available `Sources` and `Bindungs`
+
+* `VSphereSource` to create VMware vSphere (vCenter) event sources
+* `VSphereBinding` to inject VMware vSphere (vCenter) credentials
+* `HorizonSource` to create VMware Horizon event sources
+
+### vSphere Preperations
+
+Create a dedicated user in vSphere which will be used to establish a connection from the Knative `VsphereSource` to the vCenter Server. I named my user `kn-ro`. At the vCenter level, add the user and assign the `Read-only` role.
+
+![vSphere-user](assets/source-for-vsphere-ro-user.png)
+
+### Download `kn-vsphere`
+
+Repository on Github [VMware Tanzu Sources for Knative](https://github.com/vmware-tanzu/sources-for-knative)
+
+Downloading the `kn-vsphere` plugin for the `kn` cli.
+
+`curl -LO https://github.com/vmware-tanzu/sources-for-knative/releases/download/v0.39.0/kn-vsphere_Linux_x86_64.tar.gz`
+
+Unpack and copy the binary into your $PATH.
+
+```code
+kn vsphere
+Knative plugin to create Knative compatible Event Sources for VMware vSphere events,
+and Bindings to access the vSphere API
+
+Usage:
+  kn-vsphere [command]
+
+Available Commands:
+  auth        Manage vSphere credentials
+  binding     Manage vSphere API bindings
+  completion  Generate the autocompletion script for the specified shell
+  help        Help about any command
+  source      Manage vSphere Event Sources
+  version     Prints the plugin version
+
+Flags:
+  -h, --help   help for kn-vsphere
+
+Use "kn-vsphere [command] --help" for more information about a command
+```
+
+### Install the Source
+
+The CRs for the `Sources` can be installed e.g. via `kubectl apply -f https://github.com/vmware-tanzu/sources-for-knative/releases/latest/download/release.yaml`
+
+Output:
+
+```code
+kubectl apply -f https://github.com/vmware-tanzu/sources-for-knative/releases/latest/download/release.yaml
+namespace/vmware-sources created
+serviceaccount/horizon-source-controller created
+serviceaccount/horizon-source-webhook created
+clusterrole.rbac.authorization.k8s.io/vsphere-receive-adapter-cm created
+clusterrole.rbac.authorization.k8s.io/vmware-sources-admin created
+clusterrole.rbac.authorization.k8s.io/vmware-sources-core created
+clusterrole.rbac.authorization.k8s.io/podspecable-binding configured
+clusterrole.rbac.authorization.k8s.io/builtin-podspecable-binding configured
+serviceaccount/vsphere-controller created
+clusterrole.rbac.authorization.k8s.io/horizon-source-controller created
+clusterrole.rbac.authorization.k8s.io/horizon-source-observer created
+clusterrolebinding.rbac.authorization.k8s.io/vmware-sources-controller-admin created
+clusterrolebinding.rbac.authorization.k8s.io/vmware-sources-webhook-podspecable-binding created
+clusterrolebinding.rbac.authorization.k8s.io/vmware-sources-webhook-addressable-resolver-binding created
+clusterrolebinding.rbac.authorization.k8s.io/horizon-source-controller-rolebinding created
+clusterrolebinding.rbac.authorization.k8s.io/horizon-source-webhook-rolebinding created
+clusterrolebinding.rbac.authorization.k8s.io/horizon-source-controller-addressable-resolver created
+clusterrole.rbac.authorization.k8s.io/horizon-source-webhook created
+customresourcedefinition.apiextensions.k8s.io/horizonsources.sources.tanzu.vmware.com created
+customresourcedefinition.apiextensions.k8s.io/vspherebindings.sources.tanzu.vmware.com created
+customresourcedefinition.apiextensions.k8s.io/vspheresources.sources.tanzu.vmware.com created
+service/horizon-source-controller-manager created
+service/horizon-source-webhook created
+service/vsphere-source-webhook created
+deployment.apps/horizon-source-controller created
+mutatingwebhookconfiguration.admissionregistration.k8s.io/defaulting.webhook.horizon.sources.tanzu.vmware.com created
+validatingwebhookconfiguration.admissionregistration.k8s.io/validation.webhook.horizon.sources.tanzu.vmware.com created
+validatingwebhookconfiguration.admissionregistration.k8s.io/config.webhook.horizon.sources.tanzu.vmware.com created
+secret/webhook-certs created
+deployment.apps/horizon-source-webhook created
+mutatingwebhookconfiguration.admissionregistration.k8s.io/defaulting.webhook.vsphere.sources.tanzu.vmware.com created
+validatingwebhookconfiguration.admissionregistration.k8s.io/validation.webhook.vsphere.sources.tanzu.vmware.com created
+validatingwebhookconfiguration.admissionregistration.k8s.io/config.webhook.vsphere.sources.tanzu.vmware.com created
+secret/vsphere-webhook-certs created
+mutatingwebhookconfiguration.admissionregistration.k8s.io/vspherebindings.webhook.vsphere.sources.tanzu.vmware.com created
+deployment.apps/vsphere-source-webhook created
+configmap/config-leader-election created
+configmap/config-logging created
+configmap/config-observability created
+```
+
+export VCENTER_HOSTNAME='vcsa-vsphere1.coe.muc.redhat.com' \
+export VCENTER_USERNAME='kn-ro@vsphere.local' \
+export VCENTER_PASSWORD='R3dh4t1!'
+
+```code
+kn vsphere auth create \
+--namespace rguske-tanzu-sources \
+--username '$VCENTER_USERNAME' \
+--password '$VCENTER_PASSWORD' \
+--name vcsa-ro-creds \
+--verify-url https://$VCENTER_HOSTNAME \
+--verify-insecure
+```
+
+```shell
+oc create -f - <<EOF
+apiVersion: eventing.knative.dev/v1
+kind: Broker
+metadata:
+  name: inmem-broker-vsphere
+  namespace: rguske-tanzu-sources
+spec:
+  config:
+    apiVersion: v1
+    kind: ConfigMap
+    name: config-br-default-channel
+    namespace: knative-eventing
+  delivery:
+    backoffDelay: PT0.2S
+    backoffPolicy: exponential
+    retry: 10
+EOF
+```
+
+```code
+kn vsphere source create \
+--namespace rguske-tanzu-sources \
+--name vcsa-source \
+--vc-address https://vcsa-vsphere1.coe.muc.redhat.com \
+--skip-tls-verify \
+--secret-ref vcsa-ro-creds \
+--sink-uri http://broker-ingress.knative-eventing.svc.cluster.local/rguske-tanzu-sources/inmem-broker-vsphere \
+--encoding json
+```
+
+Install [Sockeye](https://github.com/n3wscott/sockeye)
+
+```yaml
+oc create -f - <<EOF
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: sockeye-vsphere
+spec:
+  template:
+    spec:
+      containerConcurrency: 0
+      containers:
+      - image: n3wscott/sockeye:v0.7.0
+EOF
+```
+
+Incoming events can be observed via `logs` or via browsing the url:
+
+```shell
+
+```
+
+`kn service update --scale 1 sockeye-vsphere`
+
+### Triggers
+
+`kn trigger create trigger-sockeye-vsphere --broker inmem-broker-vsphere --sink ksvc:sockeye-vsphere`
