@@ -1,5 +1,7 @@
 # Red Hat OpenShift Serverless Demo
 
+⚠️ WIP
+
 This repository is intent to provide information on Red Hat's OpenShift Serverless (Knative Serving) capabilities.
 
 Demoing Red Hat's OpenShift Serverless/Knative Eventing power.

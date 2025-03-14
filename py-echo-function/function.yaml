@@ -20,8 +20,7 @@ metadata:
 spec:
   broker: inmem-broker
   filter:
-    attributes:
-      type: dev.knative.apiserver.resource.update
+    attributes: {}
   subscriber:
     ref:
       apiVersion: serving.knative.dev/v1
